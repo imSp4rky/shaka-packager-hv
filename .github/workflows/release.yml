@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PACKAGER_VERSION: ${{ github.ref_name }}
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    # Legacy GYP needs Python 2.7; 20.04 still ships it and keeps the glibc floor low.
+    container: ubuntu:20.04
+    steps:
+      - name: Install toolchain
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates python2 python3 ninja-build g++ pkg-config
+      - uses: actions/checkout@v4
+      - run: python3 scripts/build.py --sync --python2 python2
+      - name: Collect
+        run: |
+          mkdir dist
+          cp out/Release/packager dist/packager-linux-x64
+          cp out/Release/mpd_generator dist/mpd_generator-linux-x64
+          strip dist/*
+      - uses: actions/upload-artifact@v4
+        with: { name: linux, path: dist/* }
+
+  macos:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Python 2.7 and ninja
+        run: |
+          brew install ninja pyenv
+          pyenv install 2.7.18
+          echo "PYTHON2=$(pyenv root)/versions/2.7.18/bin/python2.7" >> "$GITHUB_ENV"
+      - run: python3 scripts/build.py --sync --python2 "$PYTHON2"
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.13"
+      - name: Collect
+        run: |
+          mkdir dist
+          cp out/Release/packager dist/packager-osx-x64
+          cp out/Release/mpd_generator dist/mpd_generator-osx-x64
+      - uses: actions/upload-artifact@v4
+        with: { name: macos, path: dist/* }
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - name: Install Python 2.7, ninja and VS 2019 build tools
+        shell: pwsh
+        run: |
+          choco install -y --no-progress python2 ninja
+          choco install -y --no-progress visualstudio2019buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+      - run: python scripts/build.py --sync --python2 C:\Python27\python.exe
+        shell: pwsh
+        env:
+          GYP_MSVS_VERSION: "2019"
+          GYP_MSVS_OVERRIDE_PATH: C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir dist
+          cp out/Release_x64/packager.exe dist/packager-win-x64.exe
+          cp out/Release_x64/mpd_generator.exe dist/mpd_generator-win-x64.exe
+      - uses: actions/upload-artifact@v4
+        with: { name: windows, path: dist/* }
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
